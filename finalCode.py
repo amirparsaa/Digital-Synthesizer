@@ -127,26 +127,28 @@ def midi_to_audio(midi_file, output_wav_path):
     plt.figure(figsize=(6, 10))
     t = np.linspace(0, 1, sample_rate)
     plt.plot(t, audio_data[0:sample_rate], label='input signal')
-    # audio_data = apply_saturation(audio_data, saturation_type='soft', threshold=0.5, drive=1.0,
-    #                               bias=0.0, wet=1.0)
+
+    # audio_data = apply_saturation(audio_data, t[:len(
+    #     audio_data)], method='variable', T=0.5, a=2.0, bias=0.1, drive=1.5, wet=1)
+
     # plt.plot(t, audio_data[0:sample_rate], label='saturated signal')
     # plt.legend()
     # plt.xlabel("Time [s]")
     # plt.ylabel("Amplitude")
     # plt.title("saturation_effect")
 
-    # audio_data = apply_compression(
-    #     audio_data, threshold=0.5, ratio=4.0, attack=0.01, release=0.1, sample_rate=44100, wet=1.0)
-    # plt.plot(t, audio_data[0:sample_rate], label='compressed signal')
-    # plt.legend()
-    # plt.xlabel("Time [s]")
-    # plt.ylabel("Amplitude")
-    # plt.title("compression_effect")
+    audio_data = apply_compression(
+        audio_data, threshold=0.5, ratio=4.0, attack=0.01, release=0.1, sample_rate=44100, wet=1.0)
+    plt.plot(t, audio_data[0:sample_rate], label='compressed signal')
+    plt.legend()
+    plt.xlabel("Time [s]")
+    plt.ylabel("Amplitude")
+    plt.title("compression_effect")
 
     # audio_data = phaser_effect(
     # audio_data, 4, 5, 0.7, 0.6, sample_rate, 0.5, 'phaser_effect.wav')
 
-    # audio_data=voice_encoder(audio_data,'output_vocoder.wav')
+    # audio_data = voice_encoder(audio_data, 'output_vocoder.wav')
 
     # audio_data=delay_effect(audio_data,int(5* sample_rate), 0.98,50,1,sample_rate,'delay_effect.wav')
 
@@ -157,15 +159,15 @@ def midi_to_audio(midi_file, output_wav_path):
     # audio_data = reverbration_effect(audio_data, [0.1, 0.5, 0.8, 1.1], [
     #                                 0.2, 0.15, 0.1, 0.05], sample_rate, 'reverbration_effect.wav')
 
-    audio_data = apply_pitch_shift(audio_data, sample_rate, n_steps=4, wet=1.0)
-    plt.plot(t, audio_data[0:sample_rate], label='pitch shifted signal')
-    plt.legend()
-    plt.xlabel("Time [s]")
-    plt.ylabel("Amplitude")
-    plt.title("pitch_shift_effect")
+    # audio_data = apply_pitch_shift(audio_data, sample_rate, n_steps=4, wet=1.0)
+    # plt.plot(t, audio_data[0:sample_rate], label='pitch shifted signal')
+    # plt.legend()
+    # plt.xlabel("Time [s]")
+    # plt.ylabel("Amplitude")
+    # plt.title("pitch_shift_effect")
 
     # Normalize audio to prevent clipping
-    audio_data = audio_data / np.max(np.abs(audio_data))
+   # audio_data = audio_data / np.max(np.abs(audio_data))
 
     plt.tight_layout()
     plt.show()
@@ -199,56 +201,65 @@ def zero_pad(signal, target_length):
     return np.pad(signal, (0, pad_length), mode='constant')
 
 
-def voice_encoder(carrier_signal, output_wav_path):
-    file = wav.read('Sports.wav')
-    print(file[0])
-    # Parameters
-    fs = file[0]  # Sampling frequency
-    num_bands = 40  # Number of frequency bands
-    lowcut = 1.0  # Low cut for frequency band division
-    highcut = 20000.0  # High cut for frequency band division
-    order = 6
-    # Generate frequency bands
-    band_edges = np.logspace(
-        np.log10(lowcut), np.log10(highcut), num_bands + 1)
+def envelope(signal, frame_size, hop_size):
+    env = []
+    for i in range(0, len(signal), hop_size):
+        frame = signal[i:i + frame_size]
+        env.append(np.sqrt(np.mean(frame ** 2)))
+    return np.array(env)
 
-    # Example carrier and modulator signals
-    # Replace with actual carrier signal
-    # Replace with actual modulator signal, different length
-    modulator_signal = file[1]
 
-    # Determine the target length for zero-padding (maximum length of the two signals)
-    target_length = max(len(carrier_signal), len(modulator_signal))
+def vocoder(modulator, carrier, frame_size=1024, hop_size=512, num_bands=8):
 
-    # Apply zero-padding to both signals
-    carrier_signal_padded = zero_pad(carrier_signal, target_length)
-    modulator_signal_padded = zero_pad(modulator_signal, target_length)
+    modulator_bands = filter_bands(modulator, frame_size, hop_size, num_bands)
 
-    # Process each band
-    output_signal = np.zeros_like(carrier_signal_padded)
+    carrier_bands = filter_bands(carrier, frame_size, hop_size, num_bands)
+
+    envelopes = np.array([envelope(band, frame_size, hop_size)
+                         for band in modulator_bands])
+    output = np.zeros_like(carrier, dtype=np.float64)
+    for i, band in enumerate(carrier_bands):
+        modulated_band = band * np.repeat(envelopes[i], hop_size)[:len(band)]
+        output += modulated_band
+
+    return output
+
+
+def filter_bands(signal, frame_size, hop_size, num_bands):
+    sample_rate = 44100
+    nyquist = sample_rate / 2.0
+    bands = np.logspace(np.log10(300), np.log10(3400), num_bands + 1) / nyquist
+    filters = []
     for i in range(num_bands):
-        low = band_edges[i]
-        high = band_edges[i + 1]
+        low, high = bands[i], bands[i + 1]
+        b, a = butter(4, [low, high], btype='band')
+        filters.append((b, a))
+    filtered_bands = []
+    for b, a in filters:
+        filtered_bands.append(lfilter(b, a, signal))
 
-        # Filter the modulator signal
-        modulator_band = np.int16(bandpass_filter(
-            modulator_signal_padded, low, high, fs, order=order))
+    return filtered_bands
 
-        # Filter the carrier signal
-        carrier_band = np.int16(bandpass_filter(
-            carrier_signal_padded, low, high, fs, order=order))
 
-        # Modulate the carrier with the envelope of the modulator
-        envelope = np.abs(modulator_band)
-        output_signal += envelope * carrier_band
+def voice_encoder(carrier_signal, output_wav_path):
+    file = wav.read('C:\\Users\\hh\\Desktop\\signal\\MLKDream.wav')
 
-    write(output_wav_path, fs, output_signal)
+    modulator = file[1]
+    carrier = carrier_signal
+    min_length = min(len(modulator), len(carrier))
+    modulator = modulator[:min_length]
+    carrier = carrier[:min_length]
+
+    output = vocoder(modulator, carrier)
+    output = np.int16(output / np.max(np.abs(output)) * 32767)
+
+    write(output_wav_path, file[0], output)
     print(f"Audio saved to {output_wav_path}")
-    t = np.linspace(0, 1, fs)
+    t = np.linspace(0, 1, file[0])
 
     plt.figure(figsize=(10, 6))
-    plt.plot(t, carrier_signal[0:fs], label="Input Signal")
-    plt.plot(t, output_signal[0:fs], label="Output Signal (vocoder)")
+    plt.plot(t, carrier_signal[0:file[0]], label="Input Signal")
+    plt.plot(t, output[0:file[0]], label="Output Signal (vocoder)")
     plt.legend()
     plt.xlabel("Time [s]")
     plt.ylabel("Amplitude")
@@ -312,31 +323,32 @@ def delay_effect(audio_data, max_delay_samples, feedback, lfo_rate, lfo_depth, s
 # Saturation functions
 
 
-def hard_clipping(x, threshold):
-    return np.clip(x, -threshold, threshold)
+def hard_clipping(x, T):
+    return np.clip(x, -T, T)
 
 
-def soft_clipping(x, threshold):
-    return np.tanh(x / threshold) * threshold
+def soft_clipping(x, T):
+    return T * np.tanh(x / T)
 
 
-def variable_clipping(x, threshold):
-    return x / (1 + np.abs(x / threshold))
+def variable_saturation(x, T, a):
+    return T * (np.abs(x / T) ** a) * np.sign(x)
+
+# Function to apply saturation effect with bias and drive
 
 
-def apply_saturation(audio, saturation_type, threshold, drive, bias, wet):
-    if saturation_type == 'hard':
-        saturator = hard_clipping
-    elif saturation_type == 'soft':
-        saturator = soft_clipping
-    elif saturation_type == 'variable':
-        saturator = variable_clipping
+def apply_saturation(wave, t, method, T, a, bias, drive, wet):
+    # Apply drive and bias to the time values
+    x = drive * t + bias
+    # Apply the selected saturation method
+    if method == 'hard':
+        return wet*hard_clipping(wave, T)+(1-wet)*wave
+    elif method == 'soft':
+        return wet*soft_clipping(wave, T)+(1-wet)*wave
+    elif method == 'variable':
+        return wet*variable_saturation(wave, T, a)+(1-wet)*wave
     else:
-        raise ValueError("Invalid saturation type")
-
-    processed_audio = saturator(drive * audio + bias, threshold)
-
-    return wet * processed_audio + (1 - wet) * audio
+        return wave
 
 
 def apply_compression(audio, threshold=0.5, ratio=4.0, attack=0.01, release=0.1, sample_rate=44100, wet=1.0):
@@ -590,5 +602,5 @@ def apply_pitch_shift(audio, sample_rate, n_steps=0, wet=1.0):
 
 # Usage
 midi_file = 'C:\\Users\\hh\\Desktop\\signal\\input.mid'
-output_wav_path = 'output.wav'
+output_wav_path = 'compressor.wav'
 midi_to_audio(midi_file, output_wav_path)
